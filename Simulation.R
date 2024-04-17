@@ -3,7 +3,6 @@
 library(survival)
 library(mstate)
 library(tidyverse)
-library(splines)
 library(matrixStats) # for function rowCumsums
 
 source(here::here("Simulation","Simulation Functions.R"))
@@ -33,11 +32,6 @@ tmat <- trans.illdeath(names=c("EM", "IUI", "preg")) #transition matrix
 n <- 2500             # Number of patients
 n_sim <- 200           # number of replicates
 
-# gen_treat = "discrete"
-# effect_T23 ="linear"
-# effect_X12 = "non-linear"
-# time_points = tps
-# multistate_clock = "clock-reset"
 
 ### Simulation -----------------------------------------------------------------
 ### ----------------------------------------------------------------------------
@@ -146,6 +140,10 @@ sim_data <- function(n, pars, tstrat, time_points, gen_treat, effect_T23, effect
   p_cl_cox <- lapply(tstrat, cox_ccw_fun)
   
   ### 3) Clone - censor - reweight: multiple censoring models ------------------
+  ### This is a second variant of clone-censor-reweight, where the model for the 
+  ### weights is based on the artificial censoring mechanism of each cloned dataset.
+  ### This means that each clone has a different model for the weights,
+  ### instead of one model that is applied differently on each clone.
   ### Reweighting --------------------------------------------------------------
   dfs_c <- lapply(tstrat, function(t) cens_weight(MS, ccovs, "time-to-censoring", t, grace, rounding = 2))
   
@@ -231,7 +229,7 @@ truth_df <- do.call(cbind, truth_l) |>
   mutate(time = tps) |>
   pivot_longer(cols = -c(time), names_to = "Strategy", values_to = "Truth") 
 
-save(summary_df, truth_df, file = here::here("Simulation", "Discrete0.rda"))
+save(summary_df, truth_df, file = here::here("Simulation", "Discrete.rda"))
 
 ### Scenario 2) ----------------------------------------------------------------
 set.seed(123456)
@@ -240,7 +238,7 @@ res <- replicate(
   sim_data(n, pars, tstrat, tps, gen_treat ="continuous", effect_T23 = "linear", 
            effect_X12 = "linear", treat_pts), 
   simplify = F
-)
+) #30 warnings due to infinite weights
 summary_df <- bind_rows(res[index], .id = "rep_id")
 colnames(summary_df) <- c("rep_id", "Method", "time", "Never", "0m", "3m", "6m", "9m", "12m")
 
@@ -253,7 +251,7 @@ truth_df <- do.call(cbind, truth_l) |>
   mutate(time = tps) |>
   pivot_longer(cols = -c(time), names_to = "Strategy", values_to = "Truth") 
 
-save(summary_df, truth_df, file = here::here("Simulation","continuous0_new.rda"))
+save(summary_df, truth_df, file = here::here("Simulation","continuous_30warn.rda"))
 
 ### Scenario 3) ----------------------------------------------------------------
 
@@ -277,7 +275,7 @@ truth_df <- do.call(cbind, truth_l) |>
   mutate(time = tps) |>
   pivot_longer(cols = -c(time), names_to = "Strategy", values_to = "Truth") 
 
-save(summary_df, truth_df, file = here::here("Simulation","non-linearT0.rda"))
+save(summary_df, truth_df, file = here::here("Simulation","non-linearT.rda"))
 
 ### Scenario 4) ----------------------------------------------------------------
 set.seed(123456)
@@ -299,9 +297,17 @@ truth_df <- do.call(cbind, truth_l) |>
   mutate(time = tps) |>
   pivot_longer(cols = -c(time), names_to = "Strategy", values_to = "Truth") 
 
-save(summary_df, truth_df, file = here::here("Simulation","non-linearX_new.rda"))
+save(summary_df, truth_df, file = here::here("Simulation","non-linearX.rda"))
 
 ### Plots: ---------------------------------------------------------------------
+### ----------------------------------------------------------------------------
+
+# Load one scenario and then generate the respective plot
+load(here::here("Simulation","Discrete.rda"))
+#load(here::here("Simulation","continuous_30warn.rda"))
+#load(here::here("Simulation","non-linearT.rda"))
+#load(here::here("Simulation","non-linearX.rda"))
+
 # Add time 0 to summary
 grid <- expand.grid(rep_id = 1:n_sim, Method = unique(summary_df$Method), time = 0)
 summary_df2 <- merge(summary_df, grid, by = c("rep_id", "Method", "time"), all = T)
@@ -377,7 +383,6 @@ ggplot(summ, aes(x = time, color = Strategy)) +
     text = element_text(size = 15),
     legend.position="bottom", 
     strip.text.x = element_text(size = 15),
-    #legend.justification=c(0.975,0),
     legend.text = element_text(size=15),
     panel.spacing=unit(2.5,"lines"),
     legend.margin=margin(0,0,0,0),
@@ -389,13 +394,13 @@ ggplot(summ, aes(x = time, color = Strategy)) +
     y = "Recovery Probability", 
     fill = "Treat at time", 
     color = "Treat at time",
-    #caption = "The solid lines represent the truth. The shaded area represents the [5th-95th] percentile of the estimates."
     ) +
   facet_wrap( ~ Method, ncol = 2) 
-  #facet_grid(Scenario ~ Method, switch = "y")
 
 
-### Tables: --------------------------------------------------------------------
+### Summary tables: ------------------------------------------------------------
+### ----------------------------------------------------------------------------
+
 library(xtable)
 
 tble <- function(summary_df, truth_df) {
