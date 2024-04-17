@@ -1,7 +1,5 @@
 # Extending multistate models with g-computation to evaluate treatment delay
 
-
-
 R code repository for the paper "Extending multistate models with g-computation to  
 evaluate treatment delay".
 
@@ -9,11 +7,9 @@ The repository contains the following:
 
 - [Simulation.R](Simulation.R) : main R script which reproduces all simuation results and figures of the manuscript
 
-- [Simualtion Functions.R](Simulation Functions.R): R script for some functions used in the simulation study.
+- [Simualtion_Functions.R](Simulation Functions.R): R script for some functions used in the simulation study.
 
 You can download a zip file containing the directory by clicking Code -> Download ZIP at the top-right of this Github page.
-
-
 
 ### Authors:
 
