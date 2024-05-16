@@ -3,9 +3,9 @@
 library(survival)
 library(mstate)
 library(tidyverse)
-library(matrixStats) # for function rowCumsums
+library(matrixStats) 
 
-source(here::here("Simulation","Simulation Functions.R"))
+source("SimulationFunctions.R")
 
 
 ### Set up parameters ----------------------------------------------------------
@@ -13,22 +13,26 @@ source(here::here("Simulation","Simulation Functions.R"))
 pars <- data.frame(
   mu = 0,           # Mean of the predictor
   sd = 1,           # Standard deviation of the predictor 
-  beta_12 = 0.25,   # 0.5 v_na #0.5 v2, # Effect of the predictor on transition EM to IUI
-  beta_13 = -0.25,  # -0.5 v_na #-0.75 v2, # Effect of the predictor on transition EM to pregnancy
-  beta_23 = -0.15, # -0.25 v_na #-0.25 v2  # Effect of the predictor on transition IUI to pregnancy
-  alpha = -0.25,   #-0.15 v1 # Effect of treatment timing, t_A
-  k12 = 0.4,       #0.3 v_na  # Baseline hazard transition EM to IUI
-  k13 = 0.4,       #0.3 v_na # Baseline hazard transition EM to pregnancy
-  k23 = 0.8         # 0.5 v1-0 # Baseline hazard transition IUI to pregnancy
+  beta_12 = 0.25,   # Effect of the predictor on transition 1 (starting state) to 2 (treatment)
+  beta_13 = -0.25,  # Effect of the predictor on transition 1 (starting state) to 3 (recovery)
+  beta_23 = -0.15,  # Effect of the predictor on transition 2 (treatment) to 3 (recovery)
+  alpha = -0.25,    # Effect of treatment timing on transition 2 (treatment) to 3 (recovery)
+  k12 = 0.4,        # Baseline hazard transition 1 (starting state) to 2 (treatment)
+  k13 = 0.4,        # Baseline hazard transition 1 (starting state) to 3 (recovery)
+  k23 = 0.8         # Baseline hazard transition 2 (treatment) to 3 (recovery)
 )
 
-obs_win <- 1.5                      # Observation window in yrs
-tstrat <- c("0m"=0, "3m"=3/12, "6m"=6/12, "9m"=9/12, "12m"=1, "Never" = 2) # Treatment timing strategies
-tps <- seq(0.03, 1.5, 0.03)           # Points at which I want to estimate the outcome: equally spaced, 2 decimals at most
+obs_win <- 1.5      # Observation window in yrs
+tstrat <- c("0m"=0, "3m"=3/12, "6m"=6/12, "9m"=9/12, "12m"=1, "Never" = 2) # Treatment delay strategies
+tps <- seq(0.03, 1.5, 0.03)   # Points at which we want to estimate the outcome
 treat_pts <- seq(0, 12, 3)/12 
 
+# For the transition matrix we use names motivated by our data application:
+# Starting state (state 1) is here EM (expectant management)
+# Treatment (state 2) is IUI (intrauterine insemination)
+# Recovery (state 3) is Preg (pregnancy)
 tmat <- trans.illdeath(names=c("EM", "IUI", "preg")) #transition matrix
-# Status 1 = EM; 2 = IUI; 3 = Pregnant
+
 n <- 2500             # Number of patients
 n_sim <- 200           # number of replicates
 
@@ -39,6 +43,7 @@ sim_data <- function(n, pars, tstrat, time_points, gen_treat, effect_T23, effect
                      treat_pts = NULL, multistate_clock = "clock-reset"){
 
   ### 0) Generate data ---------------------------------------------------------
+  # In the data generati
   MS <- generate_dat(n, pars, gen_treat = gen_treat, effect_T23 = effect_T23, 
                      effect_X12 = effect_X12, treat_pts = treat_pts)
   
@@ -65,47 +70,67 @@ sim_data <- function(n, pars, tstrat, time_points, gen_treat, effect_T23, effect
   MS_pred <- MS |> select(f_age,stop1) #select the covariates in the dataframe MS
   
   ### 1a) Mstate continuous -----------------------------------------------------
+  # Fit the model
   type <- "linear"     
   c_fit <- my_mstate(MSdata, c12, c13, c23, timecov, type = type, times = tstrat, clock = multistate_clock)
+  # Extract baseline hazard of transition 13 and 23
   baseline <- my_basehaz(c_fit, centered=FALSE, obs_win) # Baseline hazard up until time horizon
   b13 <- baseline[baseline$strata == 'trans=2',]         # Baseline hazard for transition 1 to 3
   b23 <- baseline[grep('trans=3', baseline$strata),]     # Baseline hazard for transition 2 to 3
   
-  # Function we apply to all potential treatment points
+  # Probabilities of recovery over a fine grid of point until time horizon, 
+  # for each treatment strategy ("tstrat") 
   CumDensFun2 <- function(treat_time) {
     CumDensFun(MS_pred, c_fit, treat_time, b23, b13, c(c23, timecov), c13, obs_win, time_points, clock = multistate_clock)
   }
-
   p_ms <- lapply(tstrat, CumDensFun2)
-  if(!all(lengths(p_ms) == length(time_points))) return(p_ms)
+  if(!all(lengths(p_ms) == length(time_points))) return(p_ms) # this stops the simulation run, in case something is wrong
   
   ### 1b) Mstate strata --------------------------------------------------------
-  type <- "strata"     # TODO: implement the type splines
+  # Fit the model: for the case where treatment time is generate as a continuous variable the 
+  # treatment time variable is divided into categories. The categories can be 
+  # customized via "grace", the resulting categories are (t^g - grace; t^g + grace).
+  # If some time points before time horizon do not fall under any of the generated categories,
+  # some extra categories are created as (t^g + grace; t^g' - grace), where t^g is the
+  # delay time of strategy g and t^g' is the "next" delay time of strategy g'.
+  type <- "strata"  
   grace <- min(diff(tstrat))/2  #same as mstate strata default
   if(gen_treat == "discrete") grace <- 0.001
   c_fit_st <- my_mstate(MSdata, c12, c13, c23, timecov, type = type, tstrat, grace = grace, clock = multistate_clock)
   base_st <- my_basehaz(c_fit_st, centered=FALSE, obs_win) # Baseline hazard up until time horizon
   b13_st <- base_st[base_st$strata == 'trans=2',]          # Baseline hazard for transition 1 to 3
   b23_st <- base_st[grep('trans=3', base_st$strata),]      # Baseline hazard for transition 2 to 3
-  # Function we apply to all potential treatment points
+  
+  # Probabilities of recovery over a fine grid of point until time horizon, 
+  # for each treatment strategy ("tstrat")
   CumDensFun2 <- function(treat_time) {
     b23_st <- b23_st[grep(paste("_", eval(treat_time), "y", sep = ""), b23_st$strata),]
     CumDensFun(MS_pred, c_fit_st, treat_time, b23_st, b13_st, c23, c13, obs_win, time_points, clock = multistate_clock)
   }
   
   p_ms_st <- lapply(tstrat, CumDensFun2)
-  if(!all(lengths(p_ms_st) == length(time_points))) return(list("p_ms_st",p_ms_st))
+  if(!all(lengths(p_ms_st) == length(time_points))) return(list("p_ms_st", p_ms_st)) # this stops the simulation run, in case something is wrong
 
-  ### 2) Clone - censor - reweight: one treatment model ------------------------
-  MS$id <- 1:n
-  ccovs <- c("f_age")
+  ### 2) Clone - censor - reweight methods: variant 1 --------------------------
+  MS$id <- 1:n         # Create an ID variable
+  ccovs <- c("f_age")  # Point out the confounder
   
-  ### Reweighting --------------------------------------------------------------
+  ### Clone-censor-reweight ----------------------------------------------------
+  # This is a first variant of clone-censor-reweight, where the model for the 
+  # weights is based on the time-to-treatment mechanism of the original dataset.
+  # This means, essentially, that transition S_12(s|X) is estimated.
+  # Probability of remaining uncensored given the time-to-treatment survival function
+  # Before time - grace: S_12(time|X)
+  # Between time - grace and time + gr: S_12(time - gr |X)
+  # After time + grace: S_12(time - gr|X) - S_12(time + gr|X)
+  # The grace period is only needed for the case where treatment time is generate 
+  # as a continuous variable, and is set to 0.001 for the discrete cases.
+
   dfs <- lapply(tstrat, function(t) cens_weight(MS, ccovs, "time-to-treatment", t, grace, rounding = 2))
   
   # Check for infinite weights -------------------------------------------------
-  inf_w <- sum(unlist(lapply(dfs, function(df) is.infinite(df$w))))
-  # Trim if inf_w !=0
+  inf_w <- sum(unlist(lapply(dfs, function(df) is.infinite(df$w)))) # Count number of infinite weights
+  # Trim if there are any infinite weights
   if (inf_w!= 0) {
     dfs <- lapply(dfs, function(df) {
       trim <- quantile(df$w[!is.infinite(df$w)], probs = 0.975)
@@ -113,21 +138,28 @@ sim_data <- function(n, pars, tstrat, time_points, gen_treat, effect_T23, effect
       df
       } )
     warning("Infinite weights detected, trimming to 0.975 percentile of
-            non-infinite values.")
+            non-infinite values.") # Warning message in case of infinite weights
   }
   
   ### Kaplan- Meier ------------------------------------------------------------
   p_cl_km <- lapply(dfs, function(df) 1 - surv_km(df, time_points))
   
   ### Cox ----------------------------------------------------------------------
+  # We combine all the created weighted datasets (each representing one different 
+  # treatment strategy) into one dataset; one extra column is added to keep track 
+  # of the treatment strategy followed in each dataset
   dfs2 <- lapply(1:length(tstrat), function(i) cbind(dfs[[names(tstrat)[i]]], Strategy = tstrat[[i]]))
   df_all <- do.call(rbind, dfs2) 
+  # clock-reset after treatment
   tstart <- ave(df_all$tstart, df_all$id, df_all$IUI, FUN = first)
-  df_all$tstop <- df_all$tstop - tstart #clock-reset
+  df_all$tstop <- df_all$tstop - tstart 
   df_all$tstart <- df_all$tstart - tstart
-  df_all$Strategy1 <- df_all$Strategy * df_all$IUI # Interaction between strategy and IUI
+  # Interaction between strategy and IUI
+  df_all$Strategy1 <- df_all$Strategy * df_all$IUI 
+  # Fit the Cox model
   cox_fit <- coxph(Surv(tstart, tstop, Preg) ~ Strategy1 + strata(IUI), 
                    data = df_all, method="breslow", weights = w)
+  # Predictions:
   tt <- seq(0.01, 1.5, 0.01)
   b_ccw <- my_basehaz(cox_fit, centered = FALSE, obs_win, tt)
   cox_ccw_fun <- function(t) {
@@ -139,12 +171,16 @@ sim_data <- function(n, pars, tstrat, time_points, gen_treat, effect_T23, effect
   }
   p_cl_cox <- lapply(tstrat, cox_ccw_fun)
   
-  ### 3) Clone - censor - reweight: multiple censoring models ------------------
-  ### This is a second variant of clone-censor-reweight, where the model for the 
-  ### weights is based on the artificial censoring mechanism of each cloned dataset.
-  ### This means that each clone has a different model for the weights,
-  ### instead of one model that is applied differently on each clone.
-  ### Reweighting --------------------------------------------------------------
+  ### 3) Clone - censor - reweight methods: variant 2 --------------------------
+
+  ### Clone-censor-reweight ----------------------------------------------------
+  # This is a second variant of clone-censor-reweight, where the model for the 
+  # weights is based on the artificial censoring mechanism of each cloned dataset.
+  # This means that each clone has a different model for the weights,
+  # instead of one model that is applied differently on each clone.
+  # We decided to only report in the main article the results of the first variant,
+  # but we present the code for this second variant here, together with our results.
+  
   dfs_c <- lapply(tstrat, function(t) cens_weight(MS, ccovs, "time-to-censoring", t, grace, rounding = 2))
   
   # Check for infinite weights -------------------------------------------------
