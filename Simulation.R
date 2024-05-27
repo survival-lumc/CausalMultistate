@@ -392,12 +392,12 @@ summ$Method <- factor(
   summ$Method,
   levels = c("Mstate", "CCR + Cox", "Mstate strata", "CCR + KM"), #"CCR + KM Cens", "CCR + Cox Cens"
   labels = c("Multistate continuous", 
-             "Clone-censor-reweight + Cox",
-             "Multistate strata",
-             "Clone-censor-reweight + Kaplan-Meier"
-             #"Clone-censor-reweight + Kaplan-Meier (Cens)", 
-             #"Clone-censor-reweight + Cox (Cens)"
-             )
+             "Clone-censor-reweight continuous",
+             "Multistate categorical",
+             "Clone-censor-reweight categorical"
+             #"Clone-censor-reweight categorical (Cens)", 
+             #"Clone-censor-reweight continuous (Cens)"
+  )
 )
 
 summ <- summ[summ$Strategy %in% c("0", "0.25", "0.50", "0.75", "Never"),]
@@ -462,11 +462,11 @@ tble <- function(summary_df, truth_df) {
   summT$Method <- factor(
     summT$Method,
     levels = c("Mstate", "Mstate strata", "CCR + KM", "CCR + Cox", "CCR + KM Cens", "CCR + Cox Cens"),
-    labels = c("Multistate continuous", "Multistate strata",
-               "CCR + Kaplan-Meier", 
-               "CCR + Cox",
-               "CCR + Kaplan-Meier (Cens)", 
-               "CCR + Cox (Cens)"
+    labels = c("Multistate continuous", "Multistate categorical",
+               "CCR categorical", 
+               "CCR continuous",
+               "CCR categorical (Cens)", 
+               "CCR continuous (Cens)"
     )
   )
   summT$Strategy <- factor(
