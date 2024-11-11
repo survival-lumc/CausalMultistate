@@ -11,38 +11,58 @@ seq_log <- function(probs, times, horizon = 10) {
   rowMins(df2, na.rm = TRUE)
 }
 
+### Draw times from Weibull distribution ---------------------------------------
+### ----------------------------------------------------------------------------
+rwei <- function(n, a, b) (-log(runif(n))/a)^(1/b)
+
 ### Generating data function ---------------------------------------------------
 ### ----------------------------------------------------------------------------
 generate_dat <- function(n,pars, gen_treat = "continuous", effect_T23 = "linear", 
-                         effect_X12 = "linear", treat_pts = NULL){
+                         effect_X12 = "linear", treat_pts = NULL, 
+                         distribution = "exponential", predictor2 = FALSE){
   
   mu <- pars$mu             # Predictor X mean
   sd <- pars$sd             # Predictor X SD
+  p2 <- pars$p2
   beta_12 <- pars$beta_12   # Transition linear coefficient of X 1 -> 2
   beta_13 <- pars$beta_13   # Transition linear coefficient of X 1 -> 3
   beta_23 <- pars$beta_23   # Transition linear coefficient of X 2 -> 3
+  gamma_12 <- pars$gamma_12 # Transition linear coefficient of X 1 -> 2
+  gamma_13 <- pars$gamma_13 # Transition linear coefficient of X 1 -> 3
+  gamma_23 <- pars$gamma_23 # Transition linear coefficient of X 2 -> 3
   alpha <- pars$alpha       # Linear coefficient for delay 
   k12 <- pars$k12           # Baseline hazard transition 1 -> 2
   k13 <- pars$k13           # Baseline hazard transition 1 -> 3
   k23 <- pars$k23           # Baseline hazard transition 2 -> 3
   
   f_age <- rnorm(n, mu, sd)  # Draw n samples from a standard normal distribution
+  bin <- 0
+  if(predictor2) bin <- rbinom(n, 1, prob = p2)
   dat <- data.frame(f_age)   # Create dataframe
-
+  if(predictor2) dat$bin <- bin
+  
   dat <- dat |> 
     mutate(	
-      hr_12 = exp(beta_12 * f_age),            # Individual HR for EM to IUI 
-      hr_13 = exp(beta_13 * f_age),            # Individual HR for EM to pregnancy
-      lambda_12 = hr_12 * k12,                 # Individual hazard from EM to IUI
-      lambda_13 = hr_13 * k13,                 # Individual from EM to pregnancy
-      time_12 = rexp(n,lambda_12),             # Time to IUI drawn from an exp distribution
-      time_13 = rexp(n, lambda_13))            # Time to pregnancy drawn from an exp distribution
+      hr_12 = exp(beta_12 * f_age + gamma_12 * bin),  # Individual HR for EM to IUI 
+      hr_13 = exp(beta_13 * f_age + gamma_13 * bin),  # Individual HR for EM to pregnancy
+      lambda_12 = hr_12 * k12,                        # Individual hazard from EM to IUI
+      lambda_13 = hr_13 * k13,                        # Individual from EM to pregnancy
+      time_12 = rexp(n,lambda_12),                    # Time to IUI drawn from an exp distribution
+      time_13 = rexp(n, lambda_13))                   # Time to pregnancy drawn from an exp distribution
+  
+  if(distribution == "weibull") {
+    dat$time_12 = rwei(n,dat$lambda_12, 0.8)
+    dat$time_13 = rwei(n, dat$lambda_13, 0.8)
+  }
   
   if (gen_treat == "discrete" & effect_X12 == "linear") {
     gr <- min(diff(treat_pts))/2  # To discretize time, equivalent to rounding 
     treat_pts <- treat_pts[order(treat_pts)]
     l <- length(treat_pts)
     probs <- exp(-dat$lambda_12 %*% t(treat_pts + gr))/exp(-dat$lambda_12 %*% t(c(0,(treat_pts +gr)[-l])))
+    if(distribution == "weibull") {
+      probs <- exp(-dat$lambda_12 %*% t((treat_pts + gr)^0.8))/exp(-dat$lambda_12 %*% t(c(0,(treat_pts +gr)[-l])^0.8))
+    }
     dat$time_12 <- seq_log(probs, treat_pts)
   }
   
@@ -51,10 +71,11 @@ generate_dat <- function(n,pars, gen_treat = "continuous", effect_T23 = "linear"
     treat_pts <- treat_pts[order(treat_pts)]
     l <- length(treat_pts)
     mtx <- matrix(rep(treat_pts + gr,each = n), nrow = n)
-    hr <- exp(8*3*beta_12*f_age*(mtx-1/2)^2 - 4*beta_12*f_age)
+    hr <- exp(8*3*beta_12*f_age*(mtx-1/2)^2 - 4*beta_12*f_age + gamma_12 * bin)
+    if(distribution == "weibull")  hr <- hr * mtx^-0.2
     dmtx <- matrix(rep(diff(c(0,treat_pts + gr)),each = n), nrow = n)
     probs <- 1-k12*dmtx*hr
-    # probs is actually a hazard rate here and may exceed 1 in very extreem cases
+    # probs is actually a hazard rate here and may exceed 1 in very extreme cases
     probs[probs<0] <- 0 
     dat$time_12 <- seq_log(probs, treat_pts)
   }
@@ -66,10 +87,11 @@ generate_dat <- function(n,pars, gen_treat = "continuous", effect_T23 = "linear"
   
   dat <- dat |> 
     mutate(
-      hr_23 = exp(beta_23 * f_age + alpha * time_12),   # Individual HR for IUI to pregnancy 
-      lambda_23 = hr_23 * k23,                          # Individual hazard from IUI to pregnancy
-      time_23 = rexp(n, lambda_23)                      # Time from IUI to pregnancy 
-      )
+      hr_23 = exp(beta_23*f_age + gamma_23*bin + alpha*time_12), # Individual HR for IUI to pregnancy 
+      lambda_23 = hr_23 * k23,                                  # Individual hazard from IUI to pregnancy
+      time_23 = rexp(n, lambda_23)                              # Time from IUI to pregnancy 
+    )
+  if(distribution == "weibull")  dat$time_23 <- rwei(n, dat$lambda_23, 0.8)  
   
   if (effect_T23 == "non-linear") {
     shape_int <- abs(2*alpha)
@@ -84,11 +106,11 @@ generate_dat <- function(n,pars, gen_treat = "continuous", effect_T23 = "linear"
       int = t_int
     )
     dat <- left_join(dat, shape_df, by = "int")
-    dat$lambda_23 <- exp(beta_23 * dat$f_age) * k23
-    dat$time_23 <- rweibull(n, dat$a, 1/(dat$lambda_23)^(1/dat$a))
+    dat$lambda_23 <- exp(beta_23 * dat$f_age + gamma_23 * bin) * k23
+    dat$time_23 <- rwei(n, dat$lambda_23, dat$a)
     dat <- select(dat, -c(a, int))
   }
-
+  
   
   dat <- dat |> 
     mutate(
@@ -99,7 +121,7 @@ generate_dat <- function(n,pars, gen_treat = "continuous", effect_T23 = "linear"
       start2 = if_else(IUI == 1, time_12, NA_real_),# IUI start time for the treated group
       stop2 = if_else(IUI == 1, time_12 + time_23, NA_real_),  # time to pregnancy for the treated group
       Preg2 = ifelse(IUI == 1, 1, NA_real_)         # Pregnancy for the treated group for the treated group
-      ) |>
+    ) |>
     select(-c(hr_12, hr_23, hr_13, lambda_12, lambda_13, lambda_23, 
               time_12, time_23, time_13))
   
@@ -118,7 +140,7 @@ my_mstate <- function(MSdata, c12, c13, c23, timecov, type = "linear", times, gr
   if (type == "linear") {
     fmla <- formula(
       paste(survt, paste(c(c12, c13, c23, timecov), collapse = "+"), "+ strata(trans)")
-      )
+    )
   }
   
   if (type == "strata") {
@@ -180,7 +202,7 @@ my_basehaz <- function(coxfit, centered = FALSE, obs_win, timepoints) {
         mutate(hazard = diff(c(0, cumhaz)))
     }
   }
-
+  
   if(!is.null(bs$strata)) {
     bs <- bs |>
       group_by(strata) |>
@@ -202,7 +224,7 @@ my_basehaz <- function(coxfit, centered = FALSE, obs_win, timepoints) {
         group_by(strata) |>
         mutate(hazard = diff(c(0, cumhaz))) |>
         ungroup()
-        
+      
     }
   }
   
@@ -336,7 +358,7 @@ cens_weight <- function(data, pred_vars, weights_type = "time-to-treatment", tre
   MSkm_i <- survSplit(data = MSkm_i, cut = cuts, event = "Preg",
                       start = "tstart", end = "tstop")
   MSkm_i$tstop<- round(MSkm_i$tstop)
-
+  
   MSkm_i <- left_join(MSkm_i,  select(bh_d, c(tstart = time, haz)), by = "tstart") 
   MSkm_i$haz[is.na(MSkm_i$haz)] <- 0
   
@@ -377,18 +399,27 @@ surv_km <- function(df1, time_pts1) {
 }
 # Note that I need the "extend" = TRUE as sometimes I have no subjects left
 
-truth_fun <- function(pars, time_points, treat_t, obs_win, effect_T23 = "linear") {
+truth_fun <- function(pars, time_points, treat_t, obs_win, effect_T23 = "linear", 
+                      distribution = "exponential", predictor2 = FALSE) {
   vals <- seq(round(qnorm(0.025),3), round(qnorm(0.975),3), by = 0.005)
   time <- rep(time_points, times = length(vals))
   f_age <- rep(vals, each = length(time_points))
   beta_13 <- pars$beta_13
   beta_23 <- pars$beta_23
+  gamma_13 <- pars$gamma_13
+  gamma_23 <- pars$gamma_23
   alpha <- pars$alpha
   k13 <- pars$k13
   k23 <- pars$k23
   hr13 <- exp(beta_13 * f_age)
   hr23 <- exp(beta_23 * f_age + alpha * treat_t)
-  a <- 1
+  if (predictor2) {
+    hr13_2 <- exp(beta_13 * f_age + gamma_13)
+    hr23_2 <- exp(beta_23 * f_age + gamma_23 + alpha * treat_t)
+  }
+  a13 <- a23 <- 1
+  
+  if (distribution == "weibull") a13 <- a23 <- 0.8
   
   if(effect_T23 == "non-linear") {
     shape_int <- abs(2*alpha)
@@ -397,29 +428,36 @@ truth_fun <- function(pars, time_points, treat_t, obs_win, effect_T23 = "linear"
     t_int <- 1:(length(cuts)-1)
     l <- shape_int/(length(t_int)-1)
     l <- floor(l*10^5)/10^5
-    a <- seq(1+alpha, 1-alpha, sign(-alpha) * l)[int]
+    a23 <- seq(1+alpha, 1-alpha, sign(-alpha) * l)[int]
     hr23 <- exp(beta_23 * f_age)
+    if (predictor2) hr23_2 <- exp(beta_23 * f_age  + gamma_23)
   }
   
-  probs <- (1 - exp(-k13 * time * hr13)) * (time <= treat_t) +
-    ((1 - exp(-k13 * treat_t * hr13)) +
-       (1 - exp(-k23 * abs(obs_win - treat_t + time_points[1] - rev(time))^a * hr23)) * 
-       (exp(-k13 * treat_t * hr13))) * (time > treat_t) 
+  probs <- (1 - exp(-k13 * time^a13 * hr13)) * (time <= treat_t) +
+    ((1 - exp(-k13 * treat_t^a13 * hr13)) +
+       (1 - exp(-k23 * abs(obs_win - treat_t + time_points[1] - rev(time))^a23 * hr23)) * 
+       (exp(-k13 * treat_t^a13 * hr13))) * (time > treat_t) 
+  
+  if (predictor2) {
+    probs2 <- (1 - exp(-k13 * time^a13 * hr13_2)) * (time <= treat_t) +
+      ((1 - exp(-k13 * treat_t^a13 * hr13_2)) +
+         (1 - exp(-k23 * abs(obs_win - treat_t + time_points[1] - rev(time))^a23 * hr23_2)) * 
+         (exp(-k13 * treat_t^a13 * hr13_2))) * (time > treat_t) 
+  }
   
   df <- data.frame(time = time, pr = probs)|>
     group_by(time) |>
     summarise(pr = sum(pr)/n()) |>
     ungroup() 
   pr <- df$pr
+  if (predictor2) {
+    df2 <- data.frame(time = time, pr = probs2)|>
+      group_by(time) |>
+      summarise(pr = sum(pr)/n()) |>
+      ungroup() 
+    pr <- df$pr * (1-p2) + p2 * df2$pr
+  }
   
   return(pr)
 }
-
-
-
-
-
-
-
-
 

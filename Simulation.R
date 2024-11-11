@@ -11,11 +11,15 @@ source("SimulationFunctions.R")
 ### Set up parameters ----------------------------------------------------------
 ### ----------------------------------------------------------------------------
 pars <- data.frame(
-  mu = 0,           # Mean of the predictor
+  mu = 0,           # Mean of the predictor (normal distribution)
   sd = 1,           # Standard deviation of the predictor 
+  p2 = 0.5,         # Probability of the second predictor (binomial distribution)
   beta_12 = 0.25,   # Effect of the predictor on transition 1 (starting state) to 2 (treatment)
   beta_13 = -0.25,  # Effect of the predictor on transition 1 (starting state) to 3 (recovery)
   beta_23 = -0.15,  # Effect of the predictor on transition 2 (treatment) to 3 (recovery)
+  gamma_12 = 0.4,   # Effect of the predictor 2 on transition 1 (starting state) to 2 (treatment)
+  gamma_13 = 0.3,   # Effect of the predictor 2 on transition 1 (starting state) to 3 (recovery)
+  gamma_23 = 0.1,   # Effect of the predictor 2 on transition 2 (treatment) to 3 (recovery)
   alpha = -0.25,    # Effect of treatment timing on transition 2 (treatment) to 3 (recovery)
   k12 = 0.4,        # Baseline hazard transition 1 (starting state) to 2 (treatment)
   k13 = 0.4,        # Baseline hazard transition 1 (starting state) to 3 (recovery)
@@ -26,6 +30,8 @@ obs_win <- 1.5      # Observation window in yrs
 tstrat <- c("0m"=0, "3m"=3/12, "6m"=6/12, "9m"=9/12, "12m"=1, "Never" = 2) # Treatment delay strategies
 tps <- seq(0.03, 1.5, 0.03)   # Points at which we want to estimate the outcome
 treat_pts <- seq(0, 12, 3)/12 
+distr <- "exponential"  # choose between a exponential or weibull (with shape of 0.8)
+pred2 <- FALSE          # set true to add a second predictor with a binomial distribution 
 
 # For the transition matrix we use names motivated by our data application:
 # Starting state (state 1) is here EM (expectant management)
@@ -40,34 +46,36 @@ n_sim <- 200           # number of replicates
 ### Simulation -----------------------------------------------------------------
 ### ----------------------------------------------------------------------------
 sim_data <- function(n, pars, tstrat, time_points, gen_treat, effect_T23, effect_X12, 
-                     treat_pts = NULL, multistate_clock = "clock-reset"){
-
+                     treat_pts = NULL, multistate_clock = "clock-reset", 
+                     distribution = "exponential", predictor2 = FALSE){
+  
   ### 0) Generate data ---------------------------------------------------------
-  # In the data generati
   MS <- generate_dat(n, pars, gen_treat = gen_treat, effect_T23 = effect_T23, 
-                     effect_X12 = effect_X12, treat_pts = treat_pts)
+                     effect_X12 = effect_X12, treat_pts = treat_pts, 
+                     distribution = distribution, predictor2 = predictor2)
   
   if(!(multistate_clock %in% c("clock-reset", "clock-forward"))) {
     return("mutistate_clock must be either 'clock-reset' or 'clock-forward'")
   }
-
+  
   ### 1) Mstate: ---------------------------------------------------------------
   ###    Prepare data for fitting a multi-state model
   MS$tPreg <- if_else(MS$IUI == 1, MS$stop2, MS$stop1)
   MS$statPreg <- if_else(MS$IUI == 1, MS$Preg2, MS$Preg1)
   
-  covs <- c("f_age","stop1")          #covariates in the model
+  covs <- c("f_age", if(predictor2) "bin", "stop1")    #covariates in the model
   MSprep <- msprep(time=c(NA, 'stop1', 'tPreg'), status=c(NA,'IUI', 'statPreg'), data=MS, trans=tmat, keep=covs)
   MSdata <- expand.covs(MSprep, covs, append = TRUE, longnames = FALSE)
   
   ### Select covariates in the model, per transition and treatment timing variable
-  c12 <- c("f_age.1")
-  c13 <- c("f_age.2")
-  c23 <- c("f_age.3")
+  c12 <- c("f_age.1", if(predictor2) "bin.1")
+  c13 <- c("f_age.2", if(predictor2) "bin.2")
+  c23 <- c("f_age.3", if(predictor2) "bin.3")
   timecov <- c("stop1.3")
   
   ### Prepare prediction dataset
   MS_pred <- MS |> select(f_age,stop1) #select the covariates in the dataframe MS
+  if(predictor2) MS_pred$bin <- MS$bin
   
   ### 1a) Mstate continuous -----------------------------------------------------
   # Fit the model
@@ -110,10 +118,10 @@ sim_data <- function(n, pars, tstrat, time_points, gen_treat, effect_T23, effect
   
   p_ms_st <- lapply(tstrat, CumDensFun2)
   if(!all(lengths(p_ms_st) == length(time_points))) return(list("p_ms_st", p_ms_st)) # this stops the simulation run, in case something is wrong
-
+  
   ### 2) Clone - censor - reweight methods: variant 1 --------------------------
   MS$id <- 1:n         # Create an ID variable
-  ccovs <- c("f_age")  # Point out the confounder
+  ccovs <- c("f_age", if(predictor2) "bin")  # Point out the confounder
   
   ### Clone-censor-reweight ----------------------------------------------------
   # This is a first variant of clone-censor-reweight, where the model for the 
@@ -125,7 +133,7 @@ sim_data <- function(n, pars, tstrat, time_points, gen_treat, effect_T23, effect
   # After time + grace: S_12(time - gr|X) - S_12(time + gr|X)
   # The grace period is only needed for the case where treatment time is generate 
   # as a continuous variable, and is set to 0.001 for the discrete cases.
-
+  
   dfs <- lapply(tstrat, function(t) cens_weight(MS, ccovs, "time-to-treatment", t, grace, rounding = 2))
   
   # Check for infinite weights -------------------------------------------------
@@ -136,7 +144,7 @@ sim_data <- function(n, pars, tstrat, time_points, gen_treat, effect_T23, effect
       trim <- quantile(df$w[!is.infinite(df$w)], probs = 0.975)
       df$w <- if_else(df$w >= trim, trim, df$w) 
       df
-      } )
+    } )
     warning("Infinite weights detected, trimming to 0.975 percentile of
             non-infinite values.") # Warning message in case of infinite weights
   }
@@ -172,7 +180,7 @@ sim_data <- function(n, pars, tstrat, time_points, gen_treat, effect_T23, effect
   p_cl_cox <- lapply(tstrat, cox_ccw_fun)
   
   ### 3) Clone - censor - reweight methods: variant 2 --------------------------
-
+  
   ### Clone-censor-reweight ----------------------------------------------------
   # This is a second variant of clone-censor-reweight, where the model for the 
   # weights is based on the artificial censoring mechanism of each cloned dataset.
@@ -235,10 +243,10 @@ sim_data <- function(n, pars, tstrat, time_points, gen_treat, effect_T23, effect
             p_cl_cox[["9m"]], p_cl_km_c[["9m"]], p_cl_cox_c[["9m"]]),
     P12m = c(p_ms[["12m"]], p_ms_st[["12m"]], p_cl_km[["12m"]], 
              p_cl_cox[["12m"]], p_cl_km_c[["12m"]], p_cl_cox_c[["12m"]])
-   )
-
+  )
+  
   row.names(df) <- NULL
-
+  
   return(df)
 }
 
@@ -250,14 +258,14 @@ set.seed(123456)
 res <- replicate(
   n_sim,
   sim_data(n, pars, tstrat, tps, gen_treat ="discrete", effect_T23 = "linear", 
-           effect_X12 = "linear", treat_pts), 
+           effect_X12 = "linear", treat_pts, distribution = distr, predictor2 = pred2), 
   simplify = F
-  )
+)
 summary_df <- bind_rows(res, .id = "rep_id")
 colnames(summary_df) <- c("rep_id", "Method", "time", "Never", "0m", "3m", "6m", "9m", "12m")
 
 ### Truth
-truth_fun2 <- function(t)  truth_fun(pars, tps, t, obs_win)
+truth_fun2 <- function(t)  truth_fun(pars, tps, t, obs_win, distribution = distr, predictor2 = pred2)
 
 truth_l <- lapply(tstrat, truth_fun2)
 truth_df <- do.call(cbind, truth_l) |>
@@ -265,21 +273,23 @@ truth_df <- do.call(cbind, truth_l) |>
   mutate(time = tps) |>
   pivot_longer(cols = -c(time), names_to = "Strategy", values_to = "Truth") 
 
-save(summary_df, truth_df, file = here::here("Simulation", "Discrete.rda"))
+save(summary_df, truth_df, file = "Output/Discrete.rda")
+#save(summary_df, truth_df, file = "Output/Discrete_wei.rda") # if distr <- "weibull" 
+#save(summary_df, truth_df, file = "Output/Discrete_twopred.rda") # if pred2 <- TRUE 
 
 ### Scenario 2) ----------------------------------------------------------------
 set.seed(123456)
 res <- replicate(
   n_sim,
   sim_data(n, pars, tstrat, tps, gen_treat ="continuous", effect_T23 = "linear", 
-           effect_X12 = "linear", treat_pts), 
+           effect_X12 = "linear", treat_pts, distribution = distr, predictor2 = pred2), 
   simplify = F
 ) #30 warnings due to infinite weights
-summary_df <- bind_rows(res[index], .id = "rep_id")
+summary_df <- bind_rows(res, .id = "rep_id")
 colnames(summary_df) <- c("rep_id", "Method", "time", "Never", "0m", "3m", "6m", "9m", "12m")
 
 ### Truth
-truth_fun2 <- function(t)  truth_fun(pars, tps, t, obs_win)
+truth_fun2 <- function(t)  truth_fun(pars, tps, t, obs_win, distribution = distr, predictor2 = pred2)
 
 truth_l <- lapply(tstrat, truth_fun2)
 truth_df <- do.call(cbind, truth_l) |>
@@ -287,45 +297,24 @@ truth_df <- do.call(cbind, truth_l) |>
   mutate(time = tps) |>
   pivot_longer(cols = -c(time), names_to = "Strategy", values_to = "Truth") 
 
-save(summary_df, truth_df, file = here::here("Simulation","continuous_30warn.rda"))
+save(summary_df, truth_df, file = "Output/continuous_30warn.rda")
+#save(summary_df, truth_df, file = "Output/continuous_29warn_wei.rda") # if distr <- "weibull" 
+#save(summary_df, truth_df, file = "Output/continuous_31warn_twopred.rda") # if pred2 <- TRUE 
 
 ### Scenario 3) ----------------------------------------------------------------
-
-### Simulation 
 set.seed(123456)
 res <- replicate(
   n_sim,
   sim_data(n, pars, tstrat, tps, gen_treat ="discrete", effect_T23 = "non-linear", 
-           effect_X12 = "linear", treat_pts), 
-  simplify = F
-)
-summary_df <- bind_rows(res[index], .id = "rep_id")
-colnames(summary_df) <- c("rep_id", "Method", "time", "Never", "0m", "3m", "6m", "9m", "12m")
-
-### Truth
-truth_fun2 <- function(t)  truth_fun(pars, tps, t, obs_win, effect_T23 = "non-linear")
-
-truth_l <- lapply(tstrat, truth_fun2)
-truth_df <- do.call(cbind, truth_l) |>
-  as.data.frame() |>
-  mutate(time = tps) |>
-  pivot_longer(cols = -c(time), names_to = "Strategy", values_to = "Truth") 
-
-save(summary_df, truth_df, file = here::here("Simulation","non-linearT.rda"))
-
-### Scenario 4) ----------------------------------------------------------------
-set.seed(123456)
-res <- replicate(
-  n_sim,
-  sim_data(n, pars, tstrat, tps, gen_treat ="discrete", effect_T23 = "linear", 
-           effect_X12 = "non-linear", treat_pts), 
+           effect_X12 = "linear", treat_pts, distribution = distr, predictor2 = pred2), 
   simplify = F
 )
 summary_df <- bind_rows(res, .id = "rep_id")
 colnames(summary_df) <- c("rep_id", "Method", "time", "Never", "0m", "3m", "6m", "9m", "12m")
 
 ### Truth
-truth_fun2 <- function(t)  truth_fun(pars, tps, t, obs_win)
+truth_fun2 <- function(t)  truth_fun(pars, tps, t, obs_win, effect_T23 = "non-linear", 
+                                     distribution = distr, predictor2 = pred2)
 
 truth_l <- lapply(tstrat, truth_fun2)
 truth_df <- do.call(cbind, truth_l) |>
@@ -333,16 +322,54 @@ truth_df <- do.call(cbind, truth_l) |>
   mutate(time = tps) |>
   pivot_longer(cols = -c(time), names_to = "Strategy", values_to = "Truth") 
 
-save(summary_df, truth_df, file = here::here("Simulation","non-linearX.rda"))
+save(summary_df, truth_df, file = "Output/non-linearT.rda")
+#save(summary_df, truth_df, file = "Output/non-linearT_wei.rda") # if distr <- "weibull" 
+#save(summary_df, truth_df, file = "Output/non-linearT_twopred.rda") # if pred2 <- TRUE 
+
+### Scenario 4) ----------------------------------------------------------------
+set.seed(123456)
+res <- replicate(
+  n_sim,
+  sim_data(n, pars, tstrat, tps, gen_treat ="discrete", effect_T23 = "linear", 
+           effect_X12 = "non-linear", treat_pts, distribution = distr, predictor2 = pred2), 
+  simplify = F
+)
+summary_df <- bind_rows(res, .id = "rep_id")
+colnames(summary_df) <- c("rep_id", "Method", "time", "Never", "0m", "3m", "6m", "9m", "12m")
+
+### Truth
+truth_fun2 <- function(t)  truth_fun(pars, tps, t, obs_win, distribution = distr, predictor2 = pred2)
+
+truth_l <- lapply(tstrat, truth_fun2)
+truth_df <- do.call(cbind, truth_l) |>
+  as.data.frame() |>
+  mutate(time = tps) |>
+  pivot_longer(cols = -c(time), names_to = "Strategy", values_to = "Truth") 
+
+save(summary_df, truth_df, file = "Output/non-linearX.rda")
+#save(summary_df, truth_df, file = "Output/non-linearX_wei.rda") # if distr <- "weibull" 
+#save(summary_df, truth_df, file = "Output/non-linearX_twopred.rda") # if pred2 <- TRUE 
+
 
 ### Plots: ---------------------------------------------------------------------
 ### ----------------------------------------------------------------------------
 
 # Load one scenario and then generate the respective plot
-load(here::here("Simulation","Discrete.rda"))
-#load(here::here("Simulation","continuous_30warn.rda"))
-#load(here::here("Simulation","non-linearT.rda"))
-#load(here::here("Simulation","non-linearX.rda"))
+# Scenarios from the main paper
+load("Output/Discrete.rda")
+#load("Output/continuous_30warn.rda")
+#load("Output/non-linearT.rda")
+#load("Output/non-linearX.rda")
+# Scenarios from the main paper, but with a weibull baseline, rather than exponential
+#load("Output/Discrete_wei.rda")
+#load("Output/continuous_29warn_wei.rda")
+#load("Output/non-linearT_wei.rda")
+#load("Output/non-linearX_wei.rda")
+# Scenarios from the main paper, but with an extra (binomial) covariate
+#load("Output/Discrete_twopred.rda")
+#load("Output/continuous_31warn_twopred.rda")
+#load("Output/non-linearT_twopred.rda")
+#load("Output/non-linearX_twopred.rda")
 
 # Add time 0 to summary
 grid <- expand.grid(rep_id = 1:n_sim, Method = unique(summary_df$Method), time = 0)
@@ -424,13 +451,13 @@ ggplot(summ, aes(x = time, color = Strategy)) +
     legend.margin=margin(0,0,0,0),
     legend.box.margin=margin(-10,-10,0,-10),
     plot.caption = element_text(hjust = 0, size = 15, vjust = 7)
-    ) +
+  ) +
   labs(
     x = "Time", 
     y = "Recovery Probability", 
     fill = "Treat at time", 
     color = "Treat at time",
-    ) +
+  ) +
   facet_wrap( ~ Method, ncol = 2) 
 
 
@@ -480,12 +507,12 @@ tble <- function(summary_df, truth_df) {
     mutate(
       Bias = as.character(round(Bias,2)),
       RMSE = as.character(round(RMSE, 2))
-      ) |>
+    ) |>
     pivot_longer(cols = c(Bias, RMSE), names_to = "Measure", values_to = "value") |>
     mutate(Method = paste(Method, Measure, sep = " ")) |>
     select(-c(Measure)) |>
     pivot_wider(names_from = "Method", values_from = "value") 
-
+  
 }
 
 # Table scenario 1
@@ -507,7 +534,5 @@ final <- rbind(summ1, summ2, summ3, summ4) |>
   relocate(contains("Multistate"), .after = "Strategy")
 
 print(xtable(final), include.rownames=FALSE)
-
-
 
 

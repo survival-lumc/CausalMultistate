@@ -5,9 +5,13 @@ evaluate treatment delay".
 
 The repository contains the following:
 
-- [Simulation.R](Simulation.R) : main R script which reproduces all simuation results and figures of the manuscript
+- [Simulation.R](Simulation.R) : main R script which reproduces all simuation results and figures of the manuscript;
 
-- [SimualtionFunctions.R](SimulationFunctions.R): R script for some functions used in the simulation study.
+- [SimualtionFunctions.R](SimulationFunctions.R): R script for some functions used in the simulation study;
+
+- [Output](Output): Folder with the output of the simulation for the four scenarios described in the paper and two variations of them: (i) using Weibull baseline distribution and (ii) with an extra binomial predictor.
+
+- [Plots](Plots): The figures corresponding to all 12 scenarios.
 
 You can download a zip file containing the directory by clicking Code -> Download ZIP at the top-right of this Github page.
 
