@@ -516,18 +516,19 @@ tble <- function(summary_df, truth_df) {
 }
 
 # Table scenario 1
-load(here::here("Simulation","Discrete.rda"))
+load("Output/Discrete.rda")
 summ1 <- tble(summary_df, truth_df) |>  add_column(Scenario = "1", .before = "Strategy")
 
 # Table scenario 2
-load(here::here("Simulation","continuous_30warn.rda"))
+load("Output/continuous_30warn.rda")
 summ2 <- tble(summary_df, truth_df) |>  add_column(Scenario = "2", .before = "Strategy")
 
 # Table scenario 3
-load(here::here("Simulation","non-linearT.rda"))
+load("Output/non-linearT.rda")
 summ3 <- tble(summary_df, truth_df) |>  add_column(Scenario = "3", .before = "Strategy")
 
-load(here::here("Simulation","non-linearX.rda"))
+# Table scenario 4
+load("Output/non-linearX.rda")
 summ4 <- tble(summary_df, truth_df) |>  add_column(Scenario = "4", .before = "Strategy")
 
 final <- rbind(summ1, summ2, summ3, summ4) |>
