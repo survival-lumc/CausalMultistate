@@ -3,7 +3,7 @@
 library(survival)
 library(mstate)
 library(tidyverse)
-library(matrixStats) 
+library(matrixStats) # for function rowCumsums
 
 source("SimulationFunctions.R")
 
@@ -21,9 +21,12 @@ pars <- data.frame(
   gamma_13 = 0.3,   # Effect of the predictor 2 on transition 1 (starting state) to 3 (recovery)
   gamma_23 = 0.1,   # Effect of the predictor 2 on transition 2 (treatment) to 3 (recovery)
   alpha = -0.25,    # Effect of treatment timing on transition 2 (treatment) to 3 (recovery)
+  zeta = 0.1,       # Effect of predictor on censoring
+  eta = 0.1,        # Effect of predictor 2 on censoring
   k12 = 0.4,        # Baseline hazard transition 1 (starting state) to 2 (treatment)
   k13 = 0.4,        # Baseline hazard transition 1 (starting state) to 3 (recovery)
-  k23 = 0.8         # Baseline hazard transition 2 (treatment) to 3 (recovery)
+  k23 = 0.8,        # Baseline hazard transition 2 (treatment) to 3 (recovery)
+  kcens = 0.2       # Baseline hazard for censoring
 )
 
 obs_win <- 1.5      # Observation window in yrs
@@ -32,7 +35,7 @@ tps <- seq(0.03, 1.5, 0.03)   # Points at which we want to estimate the outcome
 treat_pts <- seq(0, 12, 3)/12 
 distr <- "exponential"  # choose between a exponential or weibull (with shape of 0.8)
 pred2 <- FALSE          # set true to add a second predictor with a binomial distribution 
-
+  
 # For the transition matrix we use names motivated by our data application:
 # Starting state (state 1) is here EM (expectant management)
 # Treatment (state 2) is IUI (intrauterine insemination)
@@ -41,6 +44,7 @@ tmat <- trans.illdeath(names=c("EM", "IUI", "preg")) #transition matrix
 
 n <- 2500             # Number of patients
 n_sim <- 200           # number of replicates
+options(nwarnings = n_sim) 
 
 
 ### Simulation -----------------------------------------------------------------
@@ -274,8 +278,8 @@ truth_df <- do.call(cbind, truth_l) |>
   pivot_longer(cols = -c(time), names_to = "Strategy", values_to = "Truth") 
 
 save(summary_df, truth_df, file = "Output/Discrete.rda")
-#save(summary_df, truth_df, file = "Output/Discrete_wei.rda") # if distr <- "weibull" 
-#save(summary_df, truth_df, file = "Output/Discrete_twopred.rda") # if pred2 <- TRUE 
+#save(summary_df, truth_df, file = "Output/Discrete_wei.rda")     # if distr <- "weibull" 
+#save(summary_df, truth_df, file = "Output/Discrete_twopred.rda") # if pred2 <- TRUE
 
 ### Scenario 2) ----------------------------------------------------------------
 set.seed(123456)
@@ -297,9 +301,10 @@ truth_df <- do.call(cbind, truth_l) |>
   mutate(time = tps) |>
   pivot_longer(cols = -c(time), names_to = "Strategy", values_to = "Truth") 
 
-save(summary_df, truth_df, file = "Output/continuous_30warn.rda")
-#save(summary_df, truth_df, file = "Output/continuous_29warn_wei.rda") # if distr <- "weibull" 
-#save(summary_df, truth_df, file = "Output/continuous_31warn_twopred.rda") # if pred2 <- TRUE 
+save(summary_df, truth_df, file = "Output/continuous_47warn.rda")
+#save(summary_df, truth_df, file = "Output/continuous_45warn_wei.rda") # if distr <- "weibull" 
+#save(summary_df, truth_df, file = "Output/continuous_63warn_twopred.rda") # if pred2 <- TRUE 
+
 
 ### Scenario 3) ----------------------------------------------------------------
 set.seed(123456)
@@ -357,17 +362,17 @@ save(summary_df, truth_df, file = "Output/non-linearX.rda")
 # Load one scenario and then generate the respective plot
 # Scenarios from the main paper
 load("Output/Discrete.rda")
-#load("Output/continuous_30warn.rda")
+#load("Output/continuous_47warn.rda")
 #load("Output/non-linearT.rda")
 #load("Output/non-linearX.rda")
 # Scenarios from the main paper, but with a weibull baseline, rather than exponential
 #load("Output/Discrete_wei.rda")
-#load("Output/continuous_29warn_wei.rda")
+#load("Output/continuous_63warn_wei.rda")
 #load("Output/non-linearT_wei.rda")
 #load("Output/non-linearX_wei.rda")
 # Scenarios from the main paper, but with an extra (binomial) covariate
 #load("Output/Discrete_twopred.rda")
-#load("Output/continuous_31warn_twopred.rda")
+#load("Output/continuous_45warn_twopred.rda")
 #load("Output/non-linearT_twopred.rda")
 #load("Output/non-linearX_twopred.rda")
 
@@ -520,14 +525,13 @@ load("Output/Discrete.rda")
 summ1 <- tble(summary_df, truth_df) |>  add_column(Scenario = "1", .before = "Strategy")
 
 # Table scenario 2
-load("Output/continuous_30warn.rda")
+load("Output/continuous_47warn.rda")
 summ2 <- tble(summary_df, truth_df) |>  add_column(Scenario = "2", .before = "Strategy")
 
 # Table scenario 3
 load("Output/non-linearT.rda")
 summ3 <- tble(summary_df, truth_df) |>  add_column(Scenario = "3", .before = "Strategy")
 
-# Table scenario 4
 load("Output/non-linearX.rda")
 summ4 <- tble(summary_df, truth_df) |>  add_column(Scenario = "4", .before = "Strategy")
 
@@ -535,5 +539,7 @@ final <- rbind(summ1, summ2, summ3, summ4) |>
   relocate(contains("Multistate"), .after = "Strategy")
 
 print(xtable(final), include.rownames=FALSE)
+
+
 
 

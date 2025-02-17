@@ -31,28 +31,35 @@ generate_dat <- function(n,pars, gen_treat = "continuous", effect_T23 = "linear"
   gamma_13 <- pars$gamma_13 # Transition linear coefficient of X 1 -> 3
   gamma_23 <- pars$gamma_23 # Transition linear coefficient of X 2 -> 3
   alpha <- pars$alpha       # Linear coefficient for delay 
+  zeta <- pars$zeta         # Linear coefficient of X for censoring
+  eta <- pars$eta           # Linear coefficient of predictor 2 for censoring
   k12 <- pars$k12           # Baseline hazard transition 1 -> 2
   k13 <- pars$k13           # Baseline hazard transition 1 -> 3
   k23 <- pars$k23           # Baseline hazard transition 2 -> 3
+  kcens <- pars$kcens       # Baseline hazard for censoring
   
   f_age <- rnorm(n, mu, sd)  # Draw n samples from a standard normal distribution
   bin <- 0
   if(predictor2) bin <- rbinom(n, 1, prob = p2)
   dat <- data.frame(f_age)   # Create dataframe
   if(predictor2) dat$bin <- bin
-  
+
   dat <- dat |> 
     mutate(	
       hr_12 = exp(beta_12 * f_age + gamma_12 * bin),  # Individual HR for EM to IUI 
       hr_13 = exp(beta_13 * f_age + gamma_13 * bin),  # Individual HR for EM to pregnancy
+      hr_cens = exp(zeta * f_age + eta * bin),        # Individual HR for censoring
       lambda_12 = hr_12 * k12,                        # Individual hazard from EM to IUI
       lambda_13 = hr_13 * k13,                        # Individual from EM to pregnancy
+      lambda_cens = hr_cens * kcens,                  # Individual from EM to pregnancy
       time_12 = rexp(n,lambda_12),                    # Time to IUI drawn from an exp distribution
-      time_13 = rexp(n, lambda_13))                   # Time to pregnancy drawn from an exp distribution
+      time_13 = rexp(n, lambda_13),                   # Time to pregnancy drawn from an exp distribution
+      time_cens = rexp(n, lambda_cens))               # Time to censoring drawn from an exp distribution
   
   if(distribution == "weibull") {
     dat$time_12 = rwei(n,dat$lambda_12, 0.8)
     dat$time_13 = rwei(n, dat$lambda_13, 0.8)
+    dat$time_cens = rwei(n, dat$lambda_cens, 0.8)
   }
   
   if (gen_treat == "discrete" & effect_X12 == "linear") {
@@ -90,7 +97,7 @@ generate_dat <- function(n,pars, gen_treat = "continuous", effect_T23 = "linear"
       hr_23 = exp(beta_23*f_age + gamma_23*bin + alpha*time_12), # Individual HR for IUI to pregnancy 
       lambda_23 = hr_23 * k23,                                  # Individual hazard from IUI to pregnancy
       time_23 = rexp(n, lambda_23)                              # Time from IUI to pregnancy 
-    )
+      )
   if(distribution == "weibull")  dat$time_23 <- rwei(n, dat$lambda_23, 0.8)  
   
   if (effect_T23 == "non-linear") {
@@ -110,7 +117,7 @@ generate_dat <- function(n,pars, gen_treat = "continuous", effect_T23 = "linear"
     dat$time_23 <- rwei(n, dat$lambda_23, dat$a)
     dat <- select(dat, -c(a, int))
   }
-  
+
   
   dat <- dat |> 
     mutate(
@@ -118,12 +125,21 @@ generate_dat <- function(n,pars, gen_treat = "continuous", effect_T23 = "linear"
       stop1 = pmin(time_12, time_13),               # Time to event (IUI or natural pregnancy)
       IUI = 1*(time_12 < time_13),                  # IUI: 0 = no, 1 = yes
       Preg1 = 1-IUI,                                # Pregnancy indicator
+      ) |>
+    mutate(
+      IUI = if_else(time_cens < stop1, 0, IUI),     # Censor IUI 
+      Preg1 = if_else(time_cens < stop1, 0, Preg1), # Censor event
+      stop1 = if_else(time_cens < stop1, time_cens, stop1), # Censor stop1
       start2 = if_else(IUI == 1, time_12, NA_real_),# IUI start time for the treated group
       stop2 = if_else(IUI == 1, time_12 + time_23, NA_real_),  # time to pregnancy for the treated group
-      Preg2 = ifelse(IUI == 1, 1, NA_real_)         # Pregnancy for the treated group for the treated group
+      Preg2 = ifelse(IUI == 1, 1, NA_real_)         # Pregnancy for the treated group 
     ) |>
-    select(-c(hr_12, hr_23, hr_13, lambda_12, lambda_13, lambda_23, 
-              time_12, time_23, time_13))
+    mutate(
+      Preg2 = if_else(time_cens < stop2, 0, Preg2, NA_real_),    # Censored pregnancy for the treated group 
+      stop2 = if_else(time_cens < stop2, time_cens, stop2, NA_real_) # Censored time to pregnancy for the treated group
+    ) |>
+    select(-c(hr_12, hr_23, hr_13, hr_cens, lambda_12, lambda_13, lambda_23, lambda_cens,
+              time_12, time_23, time_13, time_cens))
   
   return(dat)
 }   
@@ -140,7 +156,7 @@ my_mstate <- function(MSdata, c12, c13, c23, timecov, type = "linear", times, gr
   if (type == "linear") {
     fmla <- formula(
       paste(survt, paste(c(c12, c13, c23, timecov), collapse = "+"), "+ strata(trans)")
-    )
+      )
   }
   
   if (type == "strata") {
@@ -202,7 +218,7 @@ my_basehaz <- function(coxfit, centered = FALSE, obs_win, timepoints) {
         mutate(hazard = diff(c(0, cumhaz)))
     }
   }
-  
+
   if(!is.null(bs$strata)) {
     bs <- bs |>
       group_by(strata) |>
@@ -224,7 +240,7 @@ my_basehaz <- function(coxfit, centered = FALSE, obs_win, timepoints) {
         group_by(strata) |>
         mutate(hazard = diff(c(0, cumhaz))) |>
         ungroup()
-      
+        
     }
   }
   
@@ -322,7 +338,7 @@ cens_weight <- function(data, pred_vars, weights_type = "time-to-treatment", tre
   MSkm_i$Preg[MSkm_i$sCens==1] <- 0        # pregnancy status = 0 if patient is censored
   
   # Keep post-treatment information on those who are not censored and event-free
-  MSkm_2 <- MSkm_2[MSkm_i$sCens==0 & MSkm_i$Preg==0,]
+  MSkm_2 <- MSkm_2[MSkm_i$sCens==0 & MSkm_i$Preg==0 & MSkm_i$IUI == 1,]
   MSkm_2$tstop[MSkm_2$tstart==MSkm_2$tstop] <- (MSkm_2$tstop+0.1)[MSkm_2$tstart==MSkm_2$tstop]
   
   # Censoring model
@@ -358,7 +374,7 @@ cens_weight <- function(data, pred_vars, weights_type = "time-to-treatment", tre
   MSkm_i <- survSplit(data = MSkm_i, cut = cuts, event = "Preg",
                       start = "tstart", end = "tstop")
   MSkm_i$tstop<- round(MSkm_i$tstop)
-  
+
   MSkm_i <- left_join(MSkm_i,  select(bh_d, c(tstart = time, haz)), by = "tstart") 
   MSkm_i$haz[is.na(MSkm_i$haz)] <- 0
   
@@ -401,7 +417,7 @@ surv_km <- function(df1, time_pts1) {
 
 truth_fun <- function(pars, time_points, treat_t, obs_win, effect_T23 = "linear", 
                       distribution = "exponential", predictor2 = FALSE) {
-  vals <- seq(round(qnorm(0.025),3), round(qnorm(0.975),3), by = 0.005)
+  vals <- seq(round(qnorm(0.025),3), round(qnorm(0.975),3), by = 0.001)
   time <- rep(time_points, times = length(vals))
   f_age <- rep(vals, each = length(time_points))
   beta_13 <- pars$beta_13
@@ -413,6 +429,7 @@ truth_fun <- function(pars, time_points, treat_t, obs_win, effect_T23 = "linear"
   k23 <- pars$k23
   hr13 <- exp(beta_13 * f_age)
   hr23 <- exp(beta_23 * f_age + alpha * treat_t)
+  p2 <- pars$p2
   if (predictor2) {
     hr13_2 <- exp(beta_13 * f_age + gamma_13)
     hr23_2 <- exp(beta_23 * f_age + gamma_23 + alpha * treat_t)
@@ -460,4 +477,12 @@ truth_fun <- function(pars, time_points, treat_t, obs_win, effect_T23 = "linear"
   
   return(pr)
 }
+
+
+
+
+
+
+
+
 
